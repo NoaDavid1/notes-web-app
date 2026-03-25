@@ -1,9 +1,9 @@
 "use client";
 import axios from "axios";
-import React, { useEffect, useState, useRef } from "react";
-import { Post, UserPost } from "../components/UserPost";
-import "../app/globals.css";
 import { GetStaticProps } from "next";
+import React, { useEffect, useRef, useState } from "react";
+import "../app/globals.css";
+import { Post, UserPost } from "../components/UserPost";
 
 const NOTES_URL = "http://localhost:3001/notes";
 const USERS_URL = "http://localhost:3001/users";
@@ -461,46 +461,79 @@ export default function Home(props: HomeProps) {
     }
   };
 
-  const addNote = async (event: { preventDefault: () => void }) => {
-    event.preventDefault();
-    const noteObject = {
-      id: Math.floor(Math.random() * 100000),
-      title: new_note.title,
-      author: {
-        name: user?.name || "",
-        email: user?.email || "",
+  const invalidateCachePages = (pages: number[]) => {
+  setCache((prevCache) => {
+    const updatedCache = { ...prevCache };
+    pages.forEach((page) => {
+      delete updatedCache[page];
+    });
+    return updatedCache;
+  });
+};
+
+const fetchPageFromServer = async (page: number) => {
+  try {
+    const response = await axios.get(NOTES_URL, {
+      params: {
+        _page: page,
+        _per_page: POSTS_PER_PAGE,
       },
-      content: new_note.content,
-    };
+    });
 
-    try {
-      const returnedNote = await create(noteObject);
+    set_user_posts(response.data);
 
-      // Update total number of posts and pages
-      const newTotalPosts = total_num_of_posts + 1;
-      set_total_num_of_posts(newTotalPosts);
-      const newTotalPages = Math.ceil(newTotalPosts / POSTS_PER_PAGE);
-      set_total_num_of_pages(newTotalPages);
+    setCache((prevCache) => ({
+      ...prevCache,
+      [page]: response.data,
+    }));
+  } catch (error) {
+    console.log("Error fetching page from server:", error);
+  }
+};
 
-      // Navigate to the last page if a new page is created
-      if (newTotalPages > total_num_of_pages) {
-        setActivePage(newTotalPages);
-      } else {
-        await fetch_notes(); // Refresh notes for the current page
-      }
+  const addNote = async (event: { preventDefault: () => void }) => {
+  event.preventDefault();
 
-      set_new_note({
-        title: "",
-        email: "",
-        content: "",
-      });
-      set_show_new_note(false);
-      setSuccessMessage("Note added successfully!"); // Set the success message
-      setTimeout(() => setSuccessMessage(""), 3000); // Clear the success message after 3 seconds
-    } catch (error) {
-      console.log("Error adding note:", error);
-    }
+  const noteObject = {
+    id: Math.floor(Math.random() * 100000),
+    title: new_note.title,
+    author: {
+      name: user?.name || "",
+      email: user?.email || "",
+    },
+    content: new_note.content,
   };
+
+  try {
+    await create(noteObject);
+
+    const newTotalPosts = total_num_of_posts + 1;
+    const newTotalPages = Math.ceil(newTotalPosts / POSTS_PER_PAGE);
+
+    set_total_num_of_posts(newTotalPosts);
+    set_total_num_of_pages(newTotalPages);
+
+    set_new_note({
+      title: "",
+      email: "",
+      content: "",
+    });
+    set_show_new_note(false);
+    setSuccessMessage("Note added successfully!");
+    setTimeout(() => setSuccessMessage(""), 3000);
+
+    if (newTotalPages > total_num_of_pages) {
+      invalidateCachePages([activePage, newTotalPages]);
+      setActivePage(newTotalPages);
+      await fetchPageFromServer(newTotalPages);
+    } else {
+      invalidateCachePages([activePage]);
+      await fetchPageFromServer(activePage);
+    }
+  } catch (error) {
+    console.log("Error adding note:", error);
+  }
+};
 
   const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = event.target;
@@ -511,28 +544,33 @@ export default function Home(props: HomeProps) {
   };
 
   const del_note = async (position: number) => {
-    try {
-      await axios.delete(`http://localhost:3001/notes/${position}`, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("userToken")}`,
-        },
-      });
+  try {
+    await axios.delete(`${NOTES_URL}/${position}`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("userToken")}`,
+      },
+    });
 
-      // Update total number of posts and pages
-      const newTotalPosts = total_num_of_posts - 1;
-      set_total_num_of_posts(newTotalPosts);
-      const newTotalPages = Math.ceil(newTotalPosts / POSTS_PER_PAGE);
-      set_total_num_of_pages(newTotalPages);
-      // Adjust active page if the current page is empty
-      if (activePage > newTotalPages) {
-        setActivePage(newTotalPages);
-      } else {
-        await fetch_notes(); // Refresh notes for the current page
-      }
-    } catch (error) {
-      console.log("Error deleting note:", error);
+    const newTotalPosts = total_num_of_posts - 1;
+    const newTotalPages = Math.ceil(newTotalPosts / POSTS_PER_PAGE);
+
+    set_total_num_of_posts(newTotalPosts);
+    set_total_num_of_pages(newTotalPages);
+
+    const targetPage = newTotalPages === 0 ? 1 : Math.min(activePage, newTotalPages);
+
+    invalidateCachePages([activePage, targetPage]);
+
+    if (targetPage !== activePage) {
+      setActivePage(targetPage);
+      await fetchPageFromServer(targetPage);
+    } else {
+      await fetchPageFromServer(activePage);
     }
-  };
+  } catch (error) {
+    console.log("Error deleting note:", error);
+  }
+};
 
   const sta_edit = (pos: number, content: string) => {
     set_edit_pos(pos);
@@ -540,26 +578,30 @@ export default function Home(props: HomeProps) {
   };
 
   const save_edit = async (event: { preventDefault: () => void }) => {
-    event.preventDefault();
-    if (edit_pos !== null) {
-      try {
-        await axios.put(
-          `${NOTES_URL}/${edit_pos}`,
-          { content: edit_cont },
-          {
-            headers: {
-              Authorization: `Bearer ${localStorage.getItem("userToken")}`,
-            },
-          }
-        );
-        set_edit_cont("");
-        set_edit_pos(null);
-        await fetch_notes();
-      } catch (error) {
-        console.log("Error updating note:", error);
-      }
+  event.preventDefault();
+
+  if (edit_pos !== null) {
+    try {
+      await axios.put(
+        `${NOTES_URL}/${edit_pos}`,
+        { content: edit_cont },
+        {
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem("userToken")}`,
+          },
+        }
+      );
+
+      set_edit_cont("");
+      set_edit_pos(null);
+
+      invalidateCachePages([activePage]);
+      await fetchPageFromServer(activePage);
+    } catch (error) {
+      console.log("Error updating note:", error);
     }
-  };
+  }
+};
 
   return (
     <div>
